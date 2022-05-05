@@ -1,0 +1,782 @@
+---
+title: "eac_markdown"
+author: "Luke Maier"
+date: '2022-04-18'
+output: pdf_document
+header-includes: 
+- \usepackage{afterpage}
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+
+```{r hava, echo=FALSE,message=FALSE,warning=F}
+
+library("tidyverse")
+library("stringr")
+library("stringi")
+library("scales")
+library("ggthemes")
+library("hrbrthemes")
+library("knitr")
+library("ggalluvial")
+
+setwd("C:\\data\\election_security")
+
+################Budget data
+
+###########Expenditures data
+#load expenditures data
+expenditures<-read.csv("2018-2021_expenditures_edited_CSV.csv")
+
+#remove unneeded columns
+expenditures<-expenditures %>% mutate(Other=Other_F+Other_G) %>% 
+  select(-c(Other_F,Other_G,Other_F_description)) 
+
+#reshape data
+expenditures <- expenditures %>% pivot_longer(cols = c("Voting_Equipment", "Election_Auditing", 
+                                                       "Voter_Registration_Systems", "Cyber_Security", 
+                                                       "Communications", "Other","Other_COVID","Totals"),
+                                              names_to = "Category", 
+                                              values_to = "Annual_Expenditure")
+expenditures$Category <- gsub("_"," ",expenditures$Category)
+expenditures$Annual_Expenditure[is.na(expenditures$Annual_Expenditure)] <- 0
+
+
+#calculate cumulative spending per category
+cumulative_expenditures <- expenditures %>% pivot_wider(values_from = Annual_Expenditure,
+                                                        names_from = Year,
+                                                        names_prefix = "Expenditures_") %>%
+  mutate("Cumulative_2018-2019"=`Expenditures_2018-2019`,
+         "Cumulative_2020"=`Expenditures_2018-2019`+`Expenditures_2020`,
+         "Cumulative_2021"=`Expenditures_2018-2019`+`Expenditures_2020`+`Expenditures_2021`)%>%
+  select(-c(`Expenditures_2018-2019`,`Expenditures_2020`,`Expenditures_2021`))
+
+cumulative_expenditures<-cumulative_expenditures %>% 
+  pivot_longer(cols=c("Cumulative_2018-2019","Cumulative_2020","Cumulative_2021"),
+               names_to = "Year",
+               names_prefix = "Cumulative_",
+               values_to = "Cumulative_Expenditure")
+
+#combine the 2018 and 2020 budgets
+budgets<-bind_rows(read.csv("2018_budgets_edited_CSV.csv"),
+                   read.csv("2020_budgets_edited_CSV.csv"))
+
+#combine other F and other G columns into one; remove administrative data
+#TODO add description of "other" to the 2018 dataset
+budgets<-budgets %>% mutate(Other=Other_F+Other_G) %>% select(-c(Other_F,Other_G,Source)) %>%
+  select(-c("budget_period_start", "budget_period_end", "Other_F_description", "Other_G_description"))
+
+#melt data into tidy format for easy subsetting
+budgets <- budgets %>% pivot_longer(cols = c("Voting_Equipment", "Election_Auditing", 
+                                             "Voter_Registration_Systems", "Cyber_Security", 
+                                             "Communications", "Other","Other_COVID","Totals"),
+                                    names_to = "Category", 
+                                    values_to = "Amount")
+budgets$Category <- gsub("_"," ",budgets$Category)
+budgets<-budgets %>% pivot_wider(names_from = Year, values_from = Amount)
+
+#rename column headers to distinguish from data we're going to add
+budgets<-rename(budgets,"Budget_2018"="2018")
+budgets<-rename(budgets,"Budget_2020"="2020")
+
+budgets$Item[budgets$Item=="3. SUBGRANTS to local voting jurisdictions"]="3. SUBGRANTS"
+budgets$Item[budgets$Item=="1. PERSONNEL (including fringe)"]="1. PERSONNEL"
+budgets$Item[budgets$Item=="11. NonFederal Match"]="State Matching"
+budgets$Item[budgets$Item=="8. Total Federal Budget"]="Federal Funds"
+budgets$Item[budgets$Item=="12. Total Program Budget"]="Total Budget"
+budgets$Item[budgets$Item=="7. INDIRECT COSTS (if applied)"]="7. INDIRECT COSTS"
+
+
+#collapse budgets into just HAVA categories (not cost categories) "Total Budget"
+budgets_categories<- budgets %>% filter(Item== "Total Budget" ) %>%
+  group_by(Category, State) %>% 
+  summarise("Budget_2018"=sum(Budget_2018),"Budget_2020"=sum(Budget_2020))
+budgets_categories$Budget_2018[is.na(budgets_categories$Budget_2018)] <- 0
+budgets_categories$Budget_2020[is.na(budgets_categories$Budget_2020)] <- 0
+
+#reconcile year names
+budgets_categories <- rename(budgets_categories,`Budget_2018-2019`=Budget_2018)
+budgets_categories$Budget_2021<-budgets_categories$Budget_2020
+
+budgets_and_spending<-budgets_categories %>% pivot_longer(cols=c("Budget_2018-2019","Budget_2020","Budget_2021"),
+                                                          names_to = "Year",
+                                                          names_prefix = "Budget_",
+                                                          values_to = "Budgeted") %>%
+  left_join(.,expenditures,by=c("Year","State","Category")) %>%
+  left_join(.,cumulative_expenditures,by=c("Year","State","Category"))
+
+
+#generate tables
+tot <- budgets %>% 
+  filter(Category=="Totals" & Item=="Total Budget") %>%   #Item=="State Matching"|Item=="Federal Funds") %>%
+  summarise(Amount_2018=sum(Budget_2018,na.rm = T),Amount_2020=sum(Budget_2020,na.rm = T))
+tot18<-as.numeric(tot[1,1])
+
+#generate table of budgets by category
+b<-budgets %>% 
+  filter(Item=="State Matching"|Item=="Federal Funds") %>% #|Item=="Total Budget") %>%
+  filter(Category!="Totals") %>%
+  group_by(Category) %>% 
+  summarise("Budget as of 2018"=sum(Budget_2018,na.rm = T),
+            "Percent of 2018 Budget"=sum(Budget_2018/as.numeric(tot[1,1]),na.rm = T),
+            "Budget as of 2020"=sum(Budget_2020,na.rm = T),
+            "Percent of 2020 Budget"=sum(Budget_2020/as.numeric(tot[1,2]),na.rm = T),
+            "Change Amount"=sum(Budget_2020-Budget_2018,na.rm = T),
+            "Change in Percent of Budget"=sum(Budget_2020/as.numeric(tot[1,2]),na.rm=T)-sum(Budget_2018/as.numeric(tot[1,1]),na.rm=T)) 
+write.csv(as.data.frame(b),file = "budgets_by_category.csv")
+
+b<-budgets %>% 
+  filter(Category=="Totals") %>%
+  group_by(Item) %>% 
+  summarise("Budget as of 2018"=sum(Budget_2018,na.rm = T),
+            "Percent of 2018 Budget"=sum(Budget_2018/as.numeric(tot[1,1]),na.rm = T),
+            "Budget as of 2020"=sum(Budget_2020,na.rm = T),
+            "Percent of 2020 Budget"=sum(Budget_2020/as.numeric(tot[1,2]),na.rm = T),
+            "Change Amount"=sum(Budget_2020-Budget_2018,na.rm = T),
+            "Change in Percent of Budget"=sum(Budget_2020/as.numeric(tot[1,2]),na.rm=T)-sum(Budget_2018/as.numeric(tot[1,1]),na.rm=T)) 
+write.csv(as.data.frame(b),file = "budgets_by_lineitem.csv")
+
+##############
+#Load various features of states
+##############
+
+#add election performance index data
+epi18<-read.csv("all_indicators_epi_2018.csv") %>% select(state_abbv,index)
+epi20<-read.csv("all_indicators_epi_2020.csv") %>% select(state_abbv,index)
+
+epi18$epi_2018<-epi18$index
+epi18$epi_2019<-epi18$index
+epi20$epi_2020<-epi20$index
+epi20$epi_2021<-epi20$index
+
+epi18<-epi18 %>% pivot_longer(cols = c(epi_2018,epi_2019),names_prefix = "epi_",names_to = "Year", values_to = "epi")
+epi20<-epi20 %>% pivot_longer(cols = c(epi_2020,epi_2021),names_prefix = "epi_",names_to = "Year", values_to = "epi")
+
+controls<-rbind(epi18,epi20) %>% select(-c("index")) %>% 
+  rename(State=state_abbv) %>%
+  mutate(Year=as.character(Year))
+
+#add party data for governors
+parties<-read.csv("governor_parties.csv") %>%
+  mutate(Year=as.character(Year))
+controls<-left_join(controls,parties,by=c("State","Year"))
+
+#add state government employment data
+aspep<-read.csv("aspep_state.csv") %>% filter(Government_Function=="Other Government Administration") %>%
+  select(-Government_Function)%>%
+  mutate(Year=as.character(Year))
+controls<-left_join(controls,aspep,by=c("State","Year"))
+
+#clean up workspace
+remove(epi18,epi20,parties,aspep,tot,b)
+
+##############
+#Budget Graphs
+#####
+
+theme_set(theme_excel_new())
+theme_update(
+  legend.position = "right",
+  plot.title = element_text(size=14, face="bold", hjust = 0.5),
+  plot.caption = element_text(hjust=0, face="italic",size=10, ),
+  plot.caption.position ="plot",
+  plot.subtitle = element_text(hjust=0,size=9),
+  
+  axis.title.x=element_blank(),
+  axis.text.x=element_text(angle=45,size = 10),
+  
+  axis.title.y=element_blank(),
+  axis.text.y=element_text(size = 10),
+  
+  panel.grid.major.x = element_blank(),
+  
+  axis.title = element_text(margin = margin(6,6,6,6))
+)
+#graph spending per year per category
+budgets_and_spending %>% group_by(Year,Category) %>% 
+  filter(Category!="Totals" & Category!="Other COVID") %>%
+  summarise(Spent=sum(Annual_Expenditure,na.rm = 0))%>%  
+  
+  ggplot(aes(x=Category,y=Spent,fill=Year)) +
+  geom_bar(stat="identity",position = position_dodge(), alpha = 1) +
+  
+  scale_y_continuous(labels = comma_format(big.mark = ",",
+                                           decimal.mark = "."))+
+  labs(title = "Annual spending per category")+
+  scale_fill_manual(values = c("light blue","deepskyblue","blue"))+
+  theme(axis.text.x=element_text(angle=45,hjust = 1))
+
+
+#graph cumulative spending compared to budget
+budgets_and_spending %>% group_by(Year,Category) %>% 
+  filter(Category!="Totals"& Category!="Other COVID") %>%
+  summarise(Spent=sum(Cumulative_Expenditure,na.rm = 0),
+            Budgeted=sum(Budgeted,na.rm=0))%>%  
+  ggplot(aes(x=Category,y=Spent,fill=Year)) +
+  
+  #add plot for the budget
+  geom_col(aes(y=Budgeted),stat="identity",position = position_dodge(), alpha =0,color="red")+
+  
+  #add bars for cumulative spending in each category per year
+  geom_col(stat="identity",position = position_dodge(), alpha = 1) +
+  
+  scale_y_continuous(labels = comma_format(big.mark = ",",
+                                           decimal.mark = "."))+
+  scale_fill_manual(values = c("light blue","deepskyblue","blue"))+
+  
+  labs(title = "Culumative spending compared to budget",
+       caption = str_wrap("Note: The total amount states budgeted for each category is outlined in red. In 2020, states submitted a revised budget that combined the 2018 and 2020 HAVA election security grants.",70))+
+  theme(axis.text.x=element_text(angle=45,hjust = 1))
+
+theme_update(legend.position = "bottom",
+             axis.text.x=element_text(angle = 0))
+
+#create stacked bar charts 
+budgets_and_spending %>% group_by(Category) %>% 
+  filter(Category!="Totals" & Category!="Other COVID") %>%
+  select(-c("Budgeted","Annual_Expenditure"))%>%
+  pivot_wider(names_from = Year,
+              values_from = Cumulative_Expenditure,
+              names_prefix = "Cumulative Expenditure_")%>%
+  
+  summarise("Cumulative Expenditure_2018-2019"=sum(`Cumulative Expenditure_2018-2019`,na.rm = T),
+            "Cumulative Expenditure_2020"=sum(`Cumulative Expenditure_2020`,na.rm = T),
+            "Cumulative Expenditure_2021"=sum(`Cumulative Expenditure_2021`,na.rm = T)) %>%
+  
+  mutate(`Pct_2018-2019`=`Cumulative Expenditure_2018-2019`/sum(`Cumulative Expenditure_2018-2019`),
+         Pct_2020=`Cumulative Expenditure_2020`/sum(`Cumulative Expenditure_2020`),
+         Pct_2021=`Cumulative Expenditure_2021`/sum(`Cumulative Expenditure_2021`)) %>%
+  pivot_longer(
+    cols = -Category, 
+    names_to = c('Item', '.value'),
+    names_pattern = '(.*)_(\\w+)') %>%
+  rename(`2018-2019`=`2018`)%>% 
+  pivot_longer( cols = c("2018-2019","2020","2021"),
+                names_to = "Year", values_to = "Amount") %>%
+  pivot_wider(names_from = Item,values_from = "Amount") %>%
+  rename(Percent_Total_Expenditures=Pct) %>%
+  
+  #generate graph
+  ggplot(.,aes(x=Year,y=`Cumulative Expenditure`,fill=as.factor(Category)))+
+  geom_flow(aes(alluvium = Category),alpha=.9,width=.3,curve_type = "cubic")+  
+  
+  geom_text(aes(label = paste0(round(Percent_Total_Expenditures*100),"%")), 
+            color="black",
+            position = position_stack(vjust = 0.5), size = 3)+
+  
+  labs(title = "Federal and State Cumulative Expenditures Per Category",
+       caption = str_wrap("Note: Spending in 2018 was much lower than subsequent year, so the 2018 and 2019 spending per category was combined into one time interval here to make the graph easier to read.",85))+
+  scale_fill_gdocs()+
+  scale_y_continuous(breaks = seq(0,900000000,100000000),
+                     labels = comma_format(big.mark = ",",decimal.mark = "."))
+
+#create stacked bar charts 
+budgets_categories %>% group_by(Category) %>% 
+  filter(Category!="Totals" & Category!="Other COVID") %>%
+  summarise("Cumulative Expenditure_2018"=sum(`Budget_2018-2019`,na.rm = T),"Cumulative Expenditure_2020"=sum(Budget_2020,na.rm = T)) %>%
+  mutate(Pct_2018=`Cumulative Expenditure_2018`/sum(`Cumulative Expenditure_2018`),Pct_2020=`Cumulative Expenditure_2020`/sum(`Cumulative Expenditure_2020`))%>%
+  pivot_longer(
+    cols = -Category, 
+    names_to = c('Item', '.value'),
+    names_pattern = '(.*)_(\\w+)') %>% 
+  pivot_longer( cols = c("2018","2020"),
+                names_to = "Year", values_to = "Amount") %>%
+  pivot_wider(names_from = Item,values_from = "Amount") %>%
+  rename(Budgeted=`Cumulative Expenditure`,Percent_Total_Budgeted=Pct) %>%
+  
+  #generate graph
+  ggplot(.,aes(x=Year,y=Budgeted,fill=as.factor(Category)))+
+  geom_flow(aes(alluvium = Category),alpha=.9,width=.2,curve_type = "cubic")+  
+  
+  geom_text(aes(label = paste0(round(Percent_Total_Budgeted*100),"%")), 
+            color="black",
+            position = position_stack(vjust = 0.5), size = 3)+
+  
+  labs(title = "Federal and State Funds Budgeted Per Category",
+       caption = str_wrap("Note: The 2020 budgtes include grants from both the 2018 and 2020 appropriations bills. The total amounts budgeted in 2018 and 2020 do not equal the total amount of grants allocated by Congress during those years because some states did not provide matching funds or revised budgets in 2020. Also, state budgets that did not have the budget standardized format could not be tallied and were excluded.",85))+
+  scale_fill_gdocs()+
+  scale_y_continuous(breaks = seq(0,900000000,100000000),
+                     labels = comma_format(big.mark = ",",decimal.mark = "."))
+
+#calculate percent for each category each year
+sums<-budgets %>% group_by(Category,Item) %>%
+  #
+  filter(Category!="Totals" & Category!="Other COVID") %>%
+  summarise("Cumulative Expenditure_2018"=sum(`Budget_2018`,na.rm = T),"Cumulative Expenditure_2020"=sum(Budget_2020,na.rm=T)) %>%
+  pivot_longer(.,cols = c("Cumulative Expenditure_2018","Cumulative Expenditure_2020"),
+               values_to = "Amount",
+               names_to = "Year",
+               names_prefix = "Cumulative Expenditure_") %>%
+  #TODO to get just the state and federal and make nice table, turn on this filter:
+  #filter(Item=="State Matching"|Item=="Federal Funds") and filter out Category!="Totals" & above after grouping%>%
+  pivot_wider(names_from = c("Item","Year"),values_from = Amount) %>%
+  mutate("Percent Budget_Federal_2018"=`Federal Funds_2018`/sum(.$`Federal Funds_2018`),
+         "Percent Budget_Federal_2020"=`Federal Funds_2020`/sum(.$`Federal Funds_2020`),
+         "Percent Budget_State_2018"=`State Matching_2018`/sum(.$`State Matching_2018`),
+         "Percent Budget_State_2020"=`State Matching_2020`/sum(.$`State Matching_2020`)) %>%
+  rename(Budgeted_Federal_2018=`Federal Funds_2018`, 
+         Budgeted_Federal_2020=`Federal Funds_2020`, 
+         Budgeted_State_2018=`State Matching_2018`,
+         Budgeted_State_2020=`State Matching_2020`) %>%
+  pivot_longer(
+    cols = -Category, 
+    names_to = c('.value',"Level", "Year"),
+    names_sep ="_") 
+
+
+#graph percent of funds for each category
+sums %>% filter(is.na(Year)==F)%>%
+  ggplot(aes(x=Level,y=`Percent Budget`,fill=Category)) +
+  geom_col(position = position_fill())+
+  facet_grid(.~Year)+
+  
+  geom_text(aes(label = paste0(round(`Percent Budget`*100),"%")), 
+            color="black",
+            position = position_stack(vjust = 0.5), size = 3)+
+  labs(title = "Percent of State vs Federal Funds Budgeted Per Category")+
+  scale_fill_gdocs()+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+
+fed_budget <- sums %>% filter(Level=="Federal")%>%
+  select(c("Category","Year","Budgeted"))
+
+#budgeted funds by category and expenditure type
+sums %>% filter(is.na(Year)==T) %>% select(-Year)%>%
+  rename(Year=Level) %>%
+  pivot_longer(
+    cols = -c("Category","Year"),
+    values_to = "Amount",
+    names_to = "Item") %>%
+  filter(Item!="6. TOTAL DIRECT COSTS"& Item!="Budgeted" & Item!="Percent Budget" & Item!="Total Budget") %>%
+  left_join(.,fed_budget, by=c("Category","Year"))%>%
+  mutate("Percent Budget"=Amount/Budgeted) %>%
+  
+  ggplot(aes(x=Year,y=`Percent Budget`,fill=Item)) +
+  geom_col(position = position_fill())+
+  
+  geom_text(aes(label = paste0(round(`Percent Budget`*100),"%")), 
+            color="black",
+            position = position_stack(vjust = 0.5), size = 2)+
+  
+  facet_wrap(.~Category, strip.position="bottom")+
+  labs(title = str_wrap("Percent of Federal Funds Budgeted by Category and Expenditure Type",40),
+       caption = str_wrap("Note: The 2020 columns combine the HAVA grants Congress gave in 2018 and 2020. States adjusted their 2018 budgets.",85))+
+  scale_fill_gdocs()+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))
+
+remove(sums,fed_budget)
+
+###############################
+#Compile SF425 data
+#####
+#read in SF425 data on expenditures
+SF425<-read.csv("SF425 data_all years_edited_CSV.csv") %>% 
+  select(-c("Column1","Source","ItemNum")) %>%
+  rename(Item=LineItem)
+
+#load allocations data for 2018 and 2020 HAVA funds
+allocations <-read.csv("hava_allocations_CSV.csv") %>% 
+  select("State","Year","Item","Amount")
+
+#change 2020 allocations to total combined allocations for 2020 and 2018
+allocations<-allocations %>% pivot_wider(names_from = Year, values_from = Amount) %>%
+  mutate(`2021`=`2018`+`2020`,`2020`=`2018`+`2020`,`2019`=`2018`) %>%
+  pivot_longer(cols=-c("State","Item"),
+               names_to = "Year",
+               values_to = "Amount")
+
+#add HAVA state by state allocations to to the SF425 data
+SF425<-rbind(SF425,allocations)
+
+#####
+#State SF425 matching data
+#####
+
+#filter to just the state matching data
+state_matching<-SF425 %>%
+  filter(Item=="State_Matching_Required" | Item=="Recipient share of expenditures")%>%
+  pivot_wider(values_from = Amount,names_from = c(Item,Year))
+
+#add missing data for state matching required for 2019 and 2021
+state_matching$State_Matching_Required_2019<-state_matching$State_Matching_Required_2018
+state_matching$State_Matching_Required_2021<-state_matching$State_Matching_Required_2020
+
+#if state expenditures is missing, replace with previous year data
+state_matching$`Recipient share of expenditures_2018`[is.na(state_matching$`Recipient share of expenditures_2018`)]=0 
+try(state_matching$`Recipient share of expenditures_2019`[is.na(state_matching$`Recipient share of expenditures_2019`)]<-state_matching$`Recipient share of expenditures_2018`[is.na(state_matching$`Recipient share of expenditures_2019`)])
+try(state_matching$`Recipient share of expenditures_2020`[is.na(state_matching$`Recipient share of expenditures_2020`)]<-state_matching$`Recipient share of expenditures_2019`[is.na(state_matching$`Recipient share of expenditures_2020`)])
+try(state_matching$`Recipient share of expenditures_2021`[is.na(state_matching$`Recipient share of expenditures_2021`)]<-state_matching$`Recipient share of expenditures_2020`[is.na(state_matching$`Recipient share of expenditures_2021`)])
+
+#rearrange to tidy format
+state_matching<-state_matching %>% pivot_longer(
+  cols = -State, 
+  names_to = c('Item', '.value'),
+  names_pattern = '(.*)_(\\w+)') %>% 
+  pivot_longer( cols = c("2018","2019","2020","2021"),
+                names_to = "Year", values_to = "Amount") %>%
+  pivot_wider("names_from" = Item,values_from = "Amount") %>%
+  rename(State_Matching_Spent=`Recipient share of expenditures`)
+
+#calculate percent of state required matching spent
+state_matching$State_Pct_Matching_Spent<-state_matching$State_Matching_Spent/state_matching$State_Matching_Required
+
+#####
+#Federal SF425 data
+#####
+
+#federal spending
+federal_expenditures <-SF425 %>% 
+  filter(Item=="Federal_Funds_Authorized" |Item=="Federal share of expenditures") %>% #Federal share of expenditures
+  pivot_wider(values_from = Amount, names_from = c(Item,Year))
+
+#add missing data for state matching required for 2019 and 2021
+federal_expenditures$Federal_Funds_Authorized_2019<-federal_expenditures$Federal_Funds_Authorized_2018
+federal_expenditures$Federal_Funds_Authorized_2021<-federal_expenditures$Federal_Funds_Authorized_2020
+
+#if federal expenditures is missing, replace with previous year data
+federal_expenditures$`Federal share of expenditures_2018`[is.na(federal_expenditures$`Federal share of expenditures_2018`)]=0 
+try(federal_expenditures$`Federal share of expenditures_2019`[is.na(federal_expenditures$`Federal share of expenditures_2019`)]<-federal_expenditures$`Federal share of expenditures_2018`[is.na(federal_expenditures$`Federal share of expenditures_2019`)])
+try(federal_expenditures$`Federal share of expenditures_2020`[is.na(federal_expenditures$`Federal share of expenditures_2020`)]<-federal_expenditures$`Federal share of expenditures_2019`[is.na(federal_expenditures$`Federal share of expenditures_2020`)])
+try(federal_expenditures$`Federal share of expenditures_2021`[is.na(federal_expenditures$`Federal share of expenditures_2021`)]<-federal_expenditures$`Federal share of expenditures_2020`[is.na(federal_expenditures$`Federal share of expenditures_2021`)])
+
+#rearrange to tidy format
+federal_expenditures<-federal_expenditures %>% pivot_longer(
+  cols = -State, 
+  names_to = c('Item', '.value'),
+  names_pattern = '(.*)_(\\w+)') %>% 
+  pivot_longer( cols = c("2018","2019","2020","2021"),
+                names_to = "Year", values_to = "Amount") %>%
+  pivot_wider("names_from" = Item,values_from = "Amount") %>%
+  rename(Federal_Funds_Spent=`Federal share of expenditures`)
+
+#calcuate percent federal funds spent to date
+federal_expenditures$Federal_Pct_Spent<-federal_expenditures$Federal_Funds_Spent/federal_expenditures$Federal_Funds_Authorized
+
+dat<-left_join(federal_expenditures,state_matching,by=c("Year","State")) %>%
+  left_join(.,controls,by=c("Year","State"))
+
+##############################
+#Graphs - Cumulative spending
+#####
+#plot cumulative spending per year
+###
+
+theme_update(legend.position = "right",
+             axis.title.y = element_text(angle = 90,size=11))
+
+#graph cumulative state matching expenditures
+dat %>% filter(State!="DE")%>%
+  ggplot(aes(x=Year,y=log(State_Matching_Spent),color=State_Pct_Matching_Spent,group=State)) +     
+  stat_smooth(aes(y = log(State_Matching_Spent),group="none"),
+              method = "lm", formula = y ~ x + I(x^2), 
+              size = .8, se=T, level=.9, color = "red", show.legend = T, alpha=.5)+
+  geom_point(aes(size=State_Matching_Required*8),
+             position = position_dodge2(width = .9), 
+             alpha = .8) +
+  geom_text(aes(label=State, size=State_Matching_Required),color="black",alpha=.8,position = position_dodge2(width = .9))+
+  scale_color_gradient2("State_Pct_Matching_Spent",midpoint=0.3,low = "light grey", mid = "deepskyblue", high = "blue",
+                        limits=range(dat$State_Pct_Matching_Spent),na.value = "white")+
+  #add labels and gridlines
+  labs(title = "Cumulative State Matching Spent (logged dollars)",
+       caption = str_wrap("Note: The size of each state's dots corresponds to the size of its required matching amount. Because states received HAVA funds based on their population size, state allocations differed by orders of magnitude. To make the visual differences between highly and sparsely populated states less distracting, the natural logarithmic transformation was applied to the vertical axis to shrink its range and make it easier to see changes in the rates of spending over time.",85))+
+  ylab("Logged dollars")+
+  geom_vline(xintercept = c("2018.5","2019.5","2020.5"), 
+             linetype="dashed",color="red",alpha=.2,size=.5)+
+  coord_cartesian(clip="off",expand = T)+
+  
+  theme(panel.grid.major.x = element_blank(),
+        legend.position = "none")
+
+#plot cumulative federal spending over time
+#graph cumulative state matching expenditures
+dat %>% 
+  ggplot(aes(x=Year,y=log(Federal_Funds_Spent),color=Federal_Pct_Spent,group=State)) + 
+  stat_smooth(aes(y = log(Federal_Funds_Spent),group="none"),
+              method = "lm", formula = y ~ x + I(x^2), 
+              size = .8, se=T, level=.9, color = "red", show.legend = T, alpha=.5)+
+  geom_point(aes(size=Federal_Funds_Authorized*8),
+             position = position_dodge2(width = .9), 
+             alpha = .8) +
+  geom_text(aes(label=State, size=Federal_Funds_Authorized),color="black",alpha=.8,position = position_dodge2(width = .9))+
+  scale_color_gradient2("Federal_Pct_Spent",midpoint=0.3,low = "light grey", mid = "deepskyblue", high = "blue",
+                        limits=range(dat$Federal_Pct_Spent),na.value = "white")+
+  #add labels and gridlines
+  labs(title = "Cumulative Federal Funds Spent (logged dollars)",
+       caption = str_wrap("Note: The size of each state's dots corresponds to the size of its federal HAVA grants. Because states received HAVA funds based on their population size, state allocations differed by orders of magnitude. To make the visual differences between highly and sparsely populated states less distracting, the natural logarithmic transformation was applied to the vertical axis to shrink its range and make it easier to see changes in the rates of spending over time.",85))+
+  ylab("Logged dollars")+
+  geom_vline(xintercept = c("2018.5","2019.5","2020.5"), 
+             linetype="dashed",color="red",alpha=.2,size=.5)+
+  coord_cartesian(clip="off",expand = T)+
+  
+  theme(panel.grid.major.x = element_blank(),
+        legend.position = "none",
+        axis.title.y = element_text())
+
+#####
+#Graphs - Percent funds spent to date
+#####
+
+#graph percent state matching expenditures
+dat %>% filter(State!="DE") %>%
+  ggplot(aes(x=Year,y=State_Pct_Matching_Spent,color=log(State_Matching_Spent),group=State)) + 
+  stat_smooth(aes(y = State_Pct_Matching_Spent,color = "red", group="none"),
+              geom = "smooth",
+              method = "lm", formula = y ~ x + I(x^2), 
+              size = .8, se=T, level=.9, color = "red", show.legend = F, alpha=.5)+
+  geom_point(aes(size=State_Matching_Required*8),
+             position = position_dodge2(width = .9), 
+             alpha = .8) +
+  geom_text(aes(label=State, size=State_Matching_Required),
+            color="black",alpha=.8,
+            position = position_dodge2(width = .9))+
+  
+  scale_color_gradient2("State_Matching_Spent",midpoint=13,low = "grey", mid = "deepskyblue", high = "blue",
+                        limits=range(log(dat$State_Matching_Spent),na.rm = TRUE,finite=T),na.value = "white")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  #add labels and gridlines
+  labs(title = "Percent State Matching Spent",
+       caption = str_wrap("Note: The size of each state's dots corresponds to the size of its required matching amount. The darkness of the shading corresponds to the amount of matching funds it's provided so far. The red trend line shows changes in the average percent of funds spent.",85))+
+  ylab("Percent of Required State Matching Funds Spent")+
+  geom_vline(xintercept = c("2018.5","2019.5","2020.5"), 
+             linetype="dashed",color="red",alpha=.2,size=.5)+
+  coord_cartesian(clip="off",expand = T)+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  
+  theme(panel.grid.major.x = element_blank(),
+        legend.position = "none",
+        axis.title.y = element_text())
+
+#plot percent cumulative federal spending over time
+dat %>% 
+  ggplot(aes(x=Year,y=Federal_Pct_Spent,color=log(Federal_Funds_Spent),group=State)) +  
+  stat_smooth(aes(x=Year, y = Federal_Pct_Spent,group="none"),
+              method = "lm", formula = y ~ x + I(x^2), 
+              size = .8, se=T, level=.9, color = "red", show.legend = T, alpha=.5)+
+  geom_point(aes(size=Federal_Funds_Authorized*8),
+             position = position_dodge2(width = .9), 
+             alpha = .8) +
+  geom_text(aes(label=State, size=Federal_Funds_Authorized),
+            color="black",alpha=.8,position = position_dodge2(width = .9))+
+  
+  scale_color_gradient2("Federal_Funds_Spent",midpoint = 13,low = "grey", mid = "deepskyblue", high = "blue",
+                        limits=range(log(dat$Federal_Funds_Spent),na.rm = TRUE,finite=T),na.value = "white")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  #add labels and gridlines
+  labs(title = "Percent Federal Funds Cumulatively Spent",
+       caption = str_wrap("Note: The size of each state's dots corresponds to the size of its HAVA grants. The darkness of the shading corresponds to the amount of its federal funds it's spent so far. The red trend line shows changes in the average percent of funds spent.",85))+
+  ylab("Percent of Authorized Federal Funds Spent")+
+  geom_vline(xintercept = c("2018.5","2019.5","2020.5"), 
+             linetype="dashed",color="red",alpha=.2,size=.5)+
+  coord_cartesian(clip="off",expand = T)+
+  
+  theme(panel.grid.major.x = element_blank(),
+        legend.position = "none",
+        axis.title.y = element_text())
+
+#####
+#Graphs - Compare spending by party in the governor's office
+#####
+
+theme_update(
+  axis.title.y=element_blank(),
+  axis.title.x=element_blank(),
+  axis.text.x=element_blank()
+)
+
+#state matching spending by party
+dat %>% filter(Party=="Republican"|Party=="Democrat")%>%
+  filter(State!="DE") %>%
+  ggplot(aes(x=Party,y=State_Pct_Matching_Spent,fill=factor(Party)))+
+  geom_boxplot(alpha=.6)+
+  geom_point(aes(color=factor(Party),size=State_Matching_Required),show.legend = F,
+             stat = "identity",alpha=.5)+
+  scale_fill_manual(values = c("blue","red"))+
+  scale_color_manual(values = c("blue","red"))+
+  facet_grid(.~Year, switch ="x")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  labs(title="Percent State Matching Funds Spent by Governor's Party",
+       caption = str_wrap("Note: The box plots show the average percent of required state matching funds spent per state grouped by party (this is not a weighted average). The boxes enclose the middle two quartiles. The dots show the data points fo reach state, sized by their state matching funds required. Deleware was excluded because they spent far more state matching funds than required by HAVA.",70))
+
+#federal spending by party
+dat %>% filter(Party=="Republican"|Party=="Democrat")%>%
+  ggplot(aes(x=Party,y=Federal_Pct_Spent,fill=factor(Party)))+
+  geom_boxplot(alpha=.6)+
+  geom_point(aes(color=factor(Party),size=Federal_Funds_Authorized), show.legend = F,
+             stat = "identity",alpha=.5)+
+  scale_fill_manual(values = c("blue","red"))+
+  scale_color_manual(values = c("blue","red"))+
+  facet_grid(.~Year, switch ="x")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  labs(title="Percent Federal Funds Spent by Governor's Party",
+       caption = str_wrap("Note: The box plots show the average percent of federal funds spent per state grouped by party (this is not a weighted average). The boxes enclose the middle two quartiles. The dots show the data points fo reach state, sized by their federal expenditures.",70))
+
+#create little dataset of total state+federal budget
+tot<-allocations %>% filter(Item=="Total_Fed_Plus_State_Funds") %>%
+  select(-Item) %>%
+  rename(Total_Budget=Amount)
+
+#federal spending by party by category
+budgets_and_spending %>%
+  filter(Year==2021 & Category!="Totals" & Category!="Other COVID")%>%
+  left_join(.,controls,by=c("State","Year")) %>%
+  filter(Party=="Republican"|Party=="Democrat")%>%
+  left_join(.,tot,by=c("State","Year")) %>%
+  mutate(Percent_Total_Funds_Spent= Cumulative_Expenditure/Total_Budget) %>%
+  
+  ggplot(aes(x=Category, y=Percent_Total_Funds_Spent*100,fill=factor(Party)))+
+  geom_boxplot(aes(fill=factor(Party)),alpha=.6)+
+  
+  geom_point(aes(group=Party, size=Cumulative_Expenditure, color=factor(Party)),show.legend=F, position=position_dodge(width=0.75),stat = "identity",alpha=.5)+
+  
+  scale_fill_manual(values = c("blue","red"))+
+  scale_color_manual(values = c("blue","red"))+
+  
+  coord_cartesian(ylim=c(0, 25))+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  labs(title=str_wrap("Percent Total HAVA Funds Spent Per Category Per Governor's Party Through 2021",40),
+       caption = str_wrap("Note: The box plots show the distribution of the percent of total state and federal funds spent for each category. Outliers with spending significantly different than their party average were hidden from the graph but included in the estimation of the quartiles. The boxes enclose the middle two quartiles, divided by the average at the black lines.",85))+
+  theme(axis.text.x=element_text(angle = 45, hjust=1,vjust = 1 ))
+
+
+#####
+#Graphs - Comparisons to EPI
+#####
+
+#update theme for controls graphs
+theme_update(
+  legend.position = "right",
+  axis.title.x=element_text(size = 11),
+  axis.text.x=element_text(angle=0,hjust = .5,size = 10),
+  axis.title.y=element_text(angle=90,size=11)
+)
+
+#compare fed funds spent to epi
+dat %>% 
+  ggplot(aes(x=epi,y=log(Federal_Funds_Spent),size=Federal_Funds_Authorized,color=Year))+
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8, se=T, level = .9, color = "red", show.legend = F, alpha=.5)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=Federal_Funds_Authorized*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  coord_cartesian(clip="off",expand = T)+
+  xlim(.6,.91)+
+  scale_y_continuous(expand = c(0, 0),limits = c(0,max(log(dat$Federal_Funds_Spent))+3))+
+  labs(title = str_wrap("Election Performance Index vs. Federal Funds Spent (logged dollars)",40),
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its of HAVA grants. EPI data are only available for 2018 and 2020, so the EPI values for 2019 and 2021 were set equal to 2018 and 2020, respectively.",85))+
+  ylab("Funds Spent (logged dollars)")+
+  xlab("Election Performance Index")+
+  guides(size="none")
+
+
+#compare pct fed funds spent to epi
+dat %>% 
+  ggplot(aes(x=epi,y=Federal_Pct_Spent*100,size=Federal_Funds_Authorized,color=Year))+
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8, se=T, level=.9, color = "red", show.legend = F, alpha=.5)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=Federal_Funds_Authorized*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  coord_cartesian(clip="off",expand = T)+
+  xlim(.6,.91)+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  labs(title = str_wrap("Election Performance Index vs. Percent Federal Funds Spent",40),
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its of HAVA grants. EPI data are only available for 2018 and 2020, so the EPI values for 2019 and 2021 were set equal to 2018 and 2020, respectively.",85))+
+  ylab("Percent Funds Spent")+
+  xlab("Election Performance Index")+
+  guides(size="none")
+
+#compare state matching spent to epi
+dat %>% 
+  ggplot(aes(x=epi,y=log(State_Matching_Spent),size=State_Matching_Required,color=Year))+
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8, se=T, level=.9, color = "red", show.legend = F, alpha=.6)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=State_Matching_Required*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  coord_cartesian(clip="off",expand = T)+
+  xlim(.6,.91)+
+  scale_y_continuous(expand = c(0, 0),limits = c(0,max(log(dat$Federal_Funds_Spent))+3))+
+  labs(title = str_wrap("Election Performance Index vs. State Matching Funds Spent (logged dollars)", 40),
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its required state matching funds. EPI data are only available for 2018 and 2020, so the EPI values for 2019 and 2021 were set equal to 2018 and 2020, respectively.",85))+
+  ylab("Funds Spent (logged dollars)")+
+  xlab("Election Performance Index")+
+  guides(size="none")
+
+#compare state pct matching spent to epi
+dat %>% filter(State!="DE")%>%
+  ggplot(aes(x=epi,y=State_Pct_Matching_Spent*100,size=State_Matching_Required,color=Year))+
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8, se=T, level=.9, color = "red", show.legend = F, alpha=.5)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=State_Matching_Required*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  coord_cartesian(clip="off",expand = T)+
+  xlim(.6,.91)+
+  labs(title = str_wrap("Election Performance Index vs. Percent State Matching Funds Spent",40),
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its required state matching funds. EPI data are only available for 2018 and 2020, so the EPI values for 2019 and 2021 were set equal to 2018 and 2020, respectively.",85))+
+  ylab("Percent Funds Spent")+
+  xlab("Election Performance Index")+
+  guides(size="none")
+
+
+#####
+#Graphs - Comparisons to state government size
+#####
+
+#compare pct fed funds spent to government size
+dat %>% filter(Year!=2021) %>%
+  ggplot(aes(x=log(Full_Time_Employment),y=Federal_Pct_Spent*100,size=Federal_Funds_Authorized,color=Year))+
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8,  se=T, level = .8, color = "red", show.legend = F, alpha=.5)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=Federal_Funds_Authorized*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  labs(title = "State Government Size vs. Percent Federal Funds Spent",
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its of total HAVA grants. The Census Bureau data on state government size is only available 2018-2020.",85))+
+  ylab("Percent Funds Spent")+
+  xlab("Full-time State Administration Employees (Logged)")+
+  guides(size="none")
+
+#compare state pct matching spent to government size
+dat %>% filter(Year!=2021 & State!="DE")%>%
+  ggplot(aes(x=log(Full_Time_Employment),y=State_Pct_Matching_Spent*100,size=State_Matching_Required,color=Year))+ 
+  stat_smooth(group="none",
+              method = "lm", formula = y ~ x , 
+              size = .8, se=T, level = .8, color = "red", show.legend = F, alpha=.5)+
+  geom_point(alpha=.6) +
+  geom_text(aes(label=State, size=State_Matching_Required*.1),color="black",alpha=1)+
+  
+  scale_color_manual(values = c("dark grey","light blue","deepskyblue","blue"))+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  labs(title = "State Government Size vs. Percent State Matching Funds Spent",
+       caption = str_wrap("Note: A state's dot size corresponds to the size of its of required state matching funds. The Census Bureau data on state government size is only available 2018-2020.",85))+
+  ylab("Percent Funds Spent")+
+  xlab("Full-time State Administration Employees (Logged)")+
+  guides(size="none")
+
+
+```
